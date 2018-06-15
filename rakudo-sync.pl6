@@ -35,6 +35,11 @@ REQUIRED PROPERTIES:
 
 OPTIONAL PROPERTIES:
   name: a name for debug output, defaults to something based on the from and to
+  sync-git: async(default)|no|yes
+    async: sync .git directory independently from rest of files
+    no:    skip syncing the .git directory
+    yes:   sync .git directory with rest of files.  For large .git directories
+           this can significantly slow down changes to non-git files.
   ignore-paths: an array of paths to ignore.  If the name starts with a '/'
                 that file (relative to the 'from'/'to' paths) will
                 not be copied (from 'from') or deleted (from 'to') during
@@ -294,16 +299,52 @@ sub print-info(Str:D $name, FswatchRecursiveHandler:D $obj, FswatchRecursiveHand
     }
 }
 
-sub yaml-parser(IO::Path:D $path) returns Array {
+sub yaml-parser(IO::Path:D $path) returns Seq {
     my @paths = @(yaml.load($path.slurp));
+    my %output;
+    my %combine_adds;
+
     for @paths.kv -> $idx, $path {
         my $early_name = $path<name> || "Record #{$idx}";
         die "Missing 'from' field in yaml file ($early_name)" unless $path<from>;
         die "Missing 'to' field in yaml file ($early_name)" unless $path<to>;
         $path<name> ||= ($path<from>, $path<to>).join(":");
         $path<from> .= IO;
+        $path<to> ~~ s/\/$//;
         $path<top> = $path<from>:delete;
-        $path<ignore-patterns> ||= ();
+        $path<ignore-patterns> ||= [];
+        $path<sync-git> ||= "async";
+
+        given $path<sync-git> {
+            when 'yes' {
+            }
+            when 'no' {
+                $path<ignore-patterns>.push("/.git")
+            }
+            when 'async' {
+                my $gitdir = $path<top>.add(".git");
+                if $gitdir.e {
+                    $path<ignore-patterns>.push("/.git");
+                    my $new_name = $path<name> ~ ":git";
+                    %combine_adds{$new_name} = {
+                        name            => $new_name,
+                        top             => $gitdir,
+                        to              => $path<to> ~ "/.git",
+                        ignore-patterns => [],
+                    };
+                }
+            }
+            default {
+                die "Unknown sync-git value for {$path<name>}: {$path<sync-git>}";
+            }
+        }
+
+        %output{$path<name>} = $path;
     }
-    return @paths;
+
+    for %combine_adds.kv -> $key, $val {
+        %output{$key} = Hash.new(|$val.pairs, |(%output{$key} || {}).pairs);
+    }
+
+    return %output.values;
 }
