@@ -2,17 +2,7 @@
 
 use YAML;
 
-my @paths = @(yaml.load($*HOME.add(".rakudo-sync.yml").slurp));
-
-for @paths -> $path {
-    die "Missing 'name' field in yaml file" unless $path<name>;
-    my $name = $path<name>;
-    die "Missing 'from' field in yaml file ($name)" unless $path<from>;
-    die "Missing 'to' field in yaml file ($name)" unless $path<to>;
-    $path<from> .= IO;
-    $path<top> = $path<from>:delete;
-    $path<ignore-patterns> ||= ();
-}
+my @paths = yaml-parser($*HOME.add(".rakudo-sync.yml"));
 
 class FswatchRecursiveHandler {
     enum UpdateType<info fswatch-stderr state-change file-change rsync-stdout rsync-stderr rsync-finished heartbeat>;
@@ -257,4 +247,18 @@ sub print-info(Str:D $name, FswatchRecursiveHandler:D $obj, FswatchRecursiveHand
     } else {
         say "$name: $type";
     }
+}
+
+sub yaml-parser(IO::Path:D $path) returns Array {
+    my @paths = @(yaml.load($path.slurp));
+    for @paths -> $path {
+        die "Missing 'name' field in yaml file" unless $path<name>;
+        my $name = $path<name>;
+        die "Missing 'from' field in yaml file ($name)" unless $path<from>;
+        die "Missing 'to' field in yaml file ($name)" unless $path<to>;
+        $path<from> .= IO;
+        $path<top> = $path<from>:delete;
+        $path<ignore-patterns> ||= ();
+    }
+    return @paths;
 }
