@@ -32,9 +32,9 @@ REQUIRED PROPERTIES:
     to: rsync-style destination.  host:path/to/dir would be relative to
         the home directory remotely.  host:/path/to/dir is an absolute path
         remotely.
-  name: a name for debug output
 
 OPTIONAL PROPERTIES:
+  name: a name for debug output, defaults to something based on the from and to
   ignore-paths: an array of paths to ignore.  If the name starts with a '/'
                 that file (relative to the 'from'/'to' paths) will
                 not be copied (from 'from') or deleted (from 'to') during
@@ -296,11 +296,11 @@ sub print-info(Str:D $name, FswatchRecursiveHandler:D $obj, FswatchRecursiveHand
 
 sub yaml-parser(IO::Path:D $path) returns Array {
     my @paths = @(yaml.load($path.slurp));
-    for @paths -> $path {
-        die "Missing 'name' field in yaml file" unless $path<name>;
-        my $name = $path<name>;
-        die "Missing 'from' field in yaml file ($name)" unless $path<from>;
-        die "Missing 'to' field in yaml file ($name)" unless $path<to>;
+    for @paths.kv -> $idx, $path {
+        my $early_name = $path<name> || "Record #{$idx}";
+        die "Missing 'from' field in yaml file ($early_name)" unless $path<from>;
+        die "Missing 'to' field in yaml file ($early_name)" unless $path<to>;
+        $path<name> ||= ($path<from>, $path<to>).join(":");
         $path<from> .= IO;
         $path<top> = $path<from>:delete;
         $path<ignore-patterns> ||= ();
