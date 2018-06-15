@@ -1,5 +1,50 @@
 #!/usr/bin/env perl6
 
+=begin pod
+=head1 NAME
+
+rakudo-sync - tool for automatically rsyncing when files change
+
+=head1 DESCRIPTION
+
+rakudo-sync uses fswatch and rsync to keep files in sync remotely.
+
+=head1 CONFIGURATION
+
+rakudo-sync loads the ~/.rakudo-sync.yml file at startup.  rakudo-sync.yml
+should contain an array of from/to descriptions.  Each description can have
+many properties:
+
+Example:
+  ---
+  - name: myrepo
+    from: /Users/aeruder/myrepo
+    to: remote.host.com:/vol/aeruder/myrepo
+    ignore-patterns:
+      - /.git
+      - /test-logs
+  - name: configfiles
+    from: /Users/aeruder/.dotfiles
+    to: remote-host.com:.dotfiles
+
+REQUIRED PROPERTIES:
+  from: absolute path to directory
+    to: rsync-style destination.  host:path/to/dir would be relative to
+        the home directory remotely.  host:/path/to/dir is an absolute path
+        remotely.
+  name: a name for debug output
+
+OPTIONAL PROPERTIES:
+  ignore-paths: an array of paths to ignore.  If the name starts with a '/'
+                that file (relative to the 'from'/'to' paths) will
+                not be copied (from 'from') or deleted (from 'to') during
+                syncing.
+
+                If the file does not begin with '/', that file will be ignored
+                globally from syncing.
+
+=end pod
+
 use YAML;
 
 my @paths = yaml-parser($*HOME.add(".rakudo-sync.yml"));
