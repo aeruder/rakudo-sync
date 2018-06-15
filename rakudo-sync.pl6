@@ -226,7 +226,7 @@ my @verbosity = (
 my @info = @paths.map: {
     my $res = {};
     my $runner = FswatchRecursiveHandler.new(|($_<top ignore-patterns to>:p).Capture);
-    my $name = $_<name> || $_<top>;
+    my $name = $_<name>;
     $runner.Supply(@verbosity).act: -> $status { print-info($name, |$status.Capture) };
     my $thread = start { $runner.run };
     $res<runner name thread> = $runner, $name, $thread;
