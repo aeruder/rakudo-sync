@@ -269,7 +269,6 @@ my @verbosity = (
     FswatchRecursiveHandler::info,
     FswatchRecursiveHandler::fswatch-stderr,
     FswatchRecursiveHandler::state-change,
-    FswatchRecursiveHandler::file-change,
 );
 # my @verbosity = FswatchRecursiveHandler::UpdateType.enums.map({ $_.key });
 
