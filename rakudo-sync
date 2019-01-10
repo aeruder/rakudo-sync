@@ -50,7 +50,7 @@ OPTIONAL PROPERTIES:
 
 =end pod
 
-use YAML;
+use YAML::Parser::LibYAML;
 
 my @paths = yaml-parser($*HOME.add(".rakudo-sync.yml"));
 
@@ -299,7 +299,7 @@ sub print-info(Str:D $name, FswatchRecursiveHandler:D $obj, FswatchRecursiveHand
 }
 
 sub yaml-parser(IO::Path:D $path) returns Seq {
-    my @paths = @(yaml.load($path.slurp));
+    my @paths = @(yaml-parse($path.absolute));
     my %output;
     my %combine_adds;
 
