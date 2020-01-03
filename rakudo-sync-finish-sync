@@ -1,0 +1,19 @@
+#!/usr/bin/env raku
+
+use Config::TOML;
+
+my $PID-FILE = %*ENV<RAKUDO_SYNC_CTRL> ?? $*ENV<RAKUDO_SYNC_CTRL>.IO !! $*HOME.add(".config/rakudo-sync/ctrl.toml");
+
+my $data = from-toml(file => $PID-FILE.Str);
+my $conn = IO::Socket::INET.new( host => "127.0.0.1",
+                                 port => $data<listen-port> );
+my $all-good = True;
+for @*ARGS -> $arg {
+    $conn.print: @*ARGS ~ "\n";
+    my $resp = $conn.get;
+    if ($resp ne "👍") {
+        $all-good = False;
+    }
+}
+$conn.close;
+exit($all-good ?? 0 !! 1);

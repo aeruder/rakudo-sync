@@ -1,4 +1,4 @@
-#!/usr/bin/env perl6
+#!/usr/bin/env raku
 
 =begin pod
 =head1 NAME
@@ -50,12 +50,15 @@ OPTIONAL PROPERTIES:
 
 =end pod
 
-use YAML::Parser::LibYAML;
+use Config::TOML;
 
-my @paths = yaml-parser($*HOME.add(".rakudo-sync.yml"));
+my $CONFIG-FILE = $*HOME.add(".config/rakudo-sync/config.toml");
+my $PID-FILE = %*ENV<RAKUDO_SYNC_CTRL> ?? $*ENV<RAKUDO_SYNC_CTRL>.IO !! $*HOME.add(".config/rakudo-sync/ctrl.toml");
+
+my @paths = load-config($CONFIG-FILE);
 
 class FswatchRecursiveHandler {
-    enum UpdateType<info fswatch-stderr state-change file-change rsync-stdout rsync-stderr rsync-finished heartbeat>;
+    enum UpdateType<info fswatch-stderr state-change file-change rsync-stdout rsync-stderr rsync-finished heartbeat sync-check>;
     enum Status<idle standby syncing>;
     has Status:D $.status = idle;
     has IO::Path $.top;
@@ -65,6 +68,7 @@ class FswatchRecursiveHandler {
     has Supplier:D $!exit = Supplier.new;
     has Bool:D $!wants-exit = False;
     has Supplier:D $!changed-paths = Supplier.new;
+    has Supplier:D $!synchronize = Supplier.new;
     has SetHash:D $!ignored-paths = SetHash.new;
     has Supplier:D $!holdoff-timer = Supplier.new;
     has DateTime $!holdoff-time = DateTime.now;
@@ -174,27 +178,44 @@ class FswatchRecursiveHandler {
         self!emit-event(info, |@cmd);
         $!rsync-process = Proc::Async.new(@cmd);
 
-        whenever $!rsync-process.stdout.lines -> $line {
-            self!emit-event(rsync-stdout, $line);
-        }
-        whenever $!rsync-process.stderr.lines -> $line {
-            self!emit-event(rsync-stderr, $line);
-        }
-        whenever $!rsync-process.start -> $res {
-            $!rsync-process = Proc::Async;
-            self!emit-event(rsync-finished, $res.exitcode);
-            self!set-status(idle);
-            if $!wants-exit {
-                done;
-            } elsif $!after-sync != idle {
-                self!sync-paths;
+        react {
+            whenever $!rsync-process.stdout.lines -> $line {
+                self!emit-event(rsync-stdout, $line);
             }
+            whenever $!rsync-process.stderr.lines -> $line {
+                self!emit-event(rsync-stderr, $line);
+            }
+            whenever $!rsync-process.start -> $res {
+                $!rsync-process = Proc::Async;
+                self!emit-event(rsync-finished, $res.exitcode);
+                self!set-status(idle);
+                if $!wants-exit {
+                    done;
+                } elsif $!after-sync != idle {
+                    self!sync-paths;
+                }
+            }
+        }
+    }
+
+    method sync {
+        my $supplier = Supplier.new;
+        my $supply = $supplier.Supply;
+        self!emit-event(sync-check, "started sync-check");
+        react {
+            whenever $supply {
+                self!emit-event(sync-check, "done sync-check");
+                $supplier.done;
+                done;
+            }
+            $!synchronize.emit: $supplier;
         }
     }
 
     method run {
         my @fswatch_cmd = (qw|fswatch -l 0.5 -r|, $!top.path).flat;
         my $fswatch = Proc::Async.new(@fswatch_cmd);
+        my @sync-done-supplier;
         react {
             whenever $fswatch.stdout.lines -> $line {
                 self!process-fswatch-line($line);
@@ -213,6 +234,14 @@ class FswatchRecursiveHandler {
                     $!wants-exit = True;
                 } else {
                     done;
+                }
+            }
+            whenever $!synchronize -> $supplier {
+                if $!status == idle {
+                    self!sync-paths;
+                    $supplier.emit: True;
+                } else {
+                    @sync-done-supplier.push: $supplier;
                 }
             }
             whenever $!exit {
@@ -236,6 +265,10 @@ class FswatchRecursiveHandler {
                 my Duration:D $delta = $!holdoff-time - DateTime.now;
                 if $delta.Real < 0 {
                     self!sync-paths;
+                    for @sync-done-supplier -> $supplier {
+                        $supplier.emit: True
+                    }
+                    @sync-done-supplier = @();
                 } else {
                     self!schedule-holdoff;
                 }
@@ -269,6 +302,7 @@ my @verbosity = (
     FswatchRecursiveHandler::info,
     FswatchRecursiveHandler::fswatch-stderr,
     FswatchRecursiveHandler::state-change,
+    FswatchRecursiveHandler::sync-check,
 );
 # my @verbosity = FswatchRecursiveHandler::UpdateType.enums.map({ $_.key });
 
@@ -286,8 +320,48 @@ signal(SIGINT).act: -> $sig {
     @info.race(batch => 1).map({ $_<runner>.force-exit });
 };
 
-await Promise.anyof(@info.map({ $_<thread> }));
-@info.race(batch => 1).map({ $_<runner>.force-exit });
+my $socket = IO::Socket::Async.listen('127.0.0.1', 0);
+react {
+    my $socket-tap = do whenever IO::Socket::Async.listen('127.0.0.1', 0) -> $conn {
+        start {
+            react {
+                whenever $conn.Supply.lines -> $line {
+                    my $info = @info.first({ $_<name> eq $line});
+                    if ($info) {
+                        $info<runner>.sync;
+                        $conn.print: "👍\n";
+                    } else {
+                        $conn.print: "🚫\n";
+                    }
+                    LAST {
+                        done;
+                    }
+                    QUIT {
+                        default {
+                            say "Connection lost: $_";
+                            done;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for @info -> $info {
+        whenever $info<thread> {
+            @info.race(batch => 1).map({ $_<runner>.force-exit });
+            done;
+        }
+    }
+    whenever $socket-tap.socket-port -> $socket-port {
+        my $record = %(
+            listen-port => $socket-port,
+            records => @(@info.map({ $_<name> })),
+            pid => $*PID,
+        );
+        spurt $PID-FILE, to-toml($record);
+    }
+}
+
 await Promise.allof(@info.map({ $_<thread> }));
 
 sub print-info(Str:D $name, FswatchRecursiveHandler:D $obj, FswatchRecursiveHandler::UpdateType:D $type, *@args) {
@@ -298,8 +372,9 @@ sub print-info(Str:D $name, FswatchRecursiveHandler:D $obj, FswatchRecursiveHand
     }
 }
 
-sub yaml-parser(IO::Path:D $path) returns Seq {
-    my @paths = @(yaml-parse($path.absolute));
+sub load-config(IO::Path:D $path) returns Seq {
+    my $toml = from-toml(file => $path.Str);
+    my @paths = @($toml<paths>);
     my %output;
     my %combine_adds;
 
