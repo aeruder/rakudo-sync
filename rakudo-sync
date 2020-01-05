@@ -76,6 +76,7 @@ class FswatchRecursiveHandler {
     has Bool:D $!needs-ignore-scan = False;
     has Status:D $!after-sync = idle;
     has Proc::Async $!rsync-process;
+    has Supplier:D $!rsync-done = Supplier.new;
     constant fuzz-factor = 0.1;
     constant holdoff-delay = 1.0;
 
@@ -175,25 +176,22 @@ class FswatchRecursiveHandler {
             @cmd.push("--exclude", $ignored-path);
         }
         @cmd.push("--", $!top.absolute ~ "/", $!to);
+        my $rsync-process = $!rsync-process = Proc::Async.new(@cmd);
         self!emit-event(info, |@cmd);
-        $!rsync-process = Proc::Async.new(@cmd);
-
-        react {
-            whenever $!rsync-process.stdout.lines -> $line {
-                self!emit-event(rsync-stdout, $line);
-            }
-            whenever $!rsync-process.stderr.lines -> $line {
-                self!emit-event(rsync-stderr, $line);
-            }
-            whenever $!rsync-process.start -> $res {
-                $!rsync-process = Proc::Async;
-                self!emit-event(rsync-finished, $res.exitcode);
-                self!set-status(idle);
-                if $!wants-exit {
-                    done;
-                } elsif $!after-sync != idle {
-                    self!sync-paths;
-                }
+        start {
+            # sleep(5);
+            react {
+              whenever $rsync-process.stdout.lines -> $line {
+                  self!emit-event(rsync-stdout, $line);
+              }
+              whenever $rsync-process.stderr.lines -> $line {
+                  self!emit-event(rsync-stderr, $line);
+              }
+              whenever $rsync-process.start -> $res {
+                  self!emit-event(rsync-finished, $res.exitcode);
+                  $!rsync-done.emit: True;
+                  done;
+              }
             }
         }
     }
@@ -239,13 +237,12 @@ class FswatchRecursiveHandler {
             whenever $!synchronize -> $supplier {
                 if $!status == idle {
                     self!sync-paths;
-                    $supplier.emit: True;
-                } else {
-                    @sync-done-supplier.push: $supplier;
                 }
+                @sync-done-supplier.push: $supplier;
             }
             whenever $!exit {
                 self!emit-event(info, "exit requested, killing fswatch");
+                $fswatch.kill;
                 whenever Promise.in(2) {
                     $fswatch.kill: SIGKILL;
                 }
@@ -265,16 +262,30 @@ class FswatchRecursiveHandler {
                 my Duration:D $delta = $!holdoff-time - DateTime.now;
                 if $delta.Real < 0 {
                     self!sync-paths;
-                    for @sync-done-supplier -> $supplier {
-                        $supplier.emit: True
-                    }
-                    @sync-done-supplier = @();
                 } else {
                     self!schedule-holdoff;
                 }
             }
             whenever Supply.interval(60, 60) {
                 self!emit-event(heartbeat);
+            }
+            whenever $!rsync-done.Supply {
+                $!rsync-process = Nil;
+                self!set-status(idle);
+                if $!wants-exit {
+                    for @sync-done-supplier -> $supplier {
+                        $supplier.emit: True
+                    }
+                    @sync-done-supplier = @();
+                    done;
+                } elsif $!after-sync != idle {
+                    self!sync-paths;
+                } else {
+                    for @sync-done-supplier -> $supplier {
+                        $supplier.emit: True
+                    }
+                    @sync-done-supplier = @();
+                }
             }
             self!populate-ignore;
             $!changed-paths.emit: $!top;
